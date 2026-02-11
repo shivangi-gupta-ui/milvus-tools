@@ -115,7 +115,13 @@ def mil2hdf(config, logger):
             logger.error("The collection name: {} must be a dic".format(config['source_collection']))
             sys.exit(1)
         
-        m2f.read_milvus_data(collection_name, config['source_collection'][collection_name])
+        # Get export format, max_rows, and batch_size from config (optional)
+        export_format = config.get('export_format', 'hdf5')
+        max_rows = config.get('max_rows', None)
+        batch_size = config.get('batch_size', None)  # Default None means use non-batched mode
+        
+        m2f.read_milvus_data(collection_name, config['source_collection'][collection_name], 
+                            export_format=export_format, max_rows=max_rows, batch_size=batch_size)
     except Exception as e:
         logger.error('Milvus to Milvus Error with: {}'.format(e))
         sys.exit(1)

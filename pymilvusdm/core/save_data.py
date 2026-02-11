@@ -1,5 +1,7 @@
 import os
 import sys
+import csv
+import json
 
 import h5py
 import numpy as np
@@ -79,3 +81,189 @@ class SaveData:
         except Exception as e:
             self.logger.error("Error with {}".format(e))
             sys.exit(1)
+
+    def save_csv_data(self, collection_name, partition_tag, vectors, ids, max_rows=None):
+        """Save data to CSV format"""
+        csv_filename = os.path.join(self.dirs, collection_name, f"{partition_tag or 'default'}.csv")
+        csv_foldername = os.path.dirname(csv_filename)
+        if not os.path.exists(csv_foldername):
+            os.makedirs(csv_foldername)
+
+        try:
+            # Limit rows if specified
+            if max_rows and len(vectors) > max_rows:
+                vectors = vectors[:max_rows]
+                ids = ids[:max_rows]
+                self.logger.info(f"Limiting export to {max_rows} rows")
+
+            with open(csv_filename, 'w', newline='') as f:
+                writer = csv.writer(f)
+                # Header: id, dim_0, dim_1, ..., dim_N
+                header = ['id'] + [f'dim_{i}' for i in range(vectors.shape[1])]
+                writer.writerow(header)
+                
+                for id, vec in zip(ids, vectors):
+                    row = [int(id)] + vec.tolist()
+                    writer.writerow(row)
+            
+            self.logger.debug(
+                "Successfully saved CSV data of collection: {}/partition: {} in {}!".format(
+                    collection_name, partition_tag, csv_filename
+                )
+            )
+            return csv_filename
+        except Exception as e:
+            self.logger.error("Error saving CSV: {}".format(e))
+            sys.exit(1)
+
+    def save_json_data(self, collection_name, partition_tag, vectors, ids, max_rows=None):
+        """Save data to JSON format"""
+        json_filename = os.path.join(self.dirs, collection_name, f"{partition_tag or 'default'}.json")
+        json_foldername = os.path.dirname(json_filename)
+        if not os.path.exists(json_foldername):
+            os.makedirs(json_foldername)
+
+        try:
+            # Limit rows if specified
+            if max_rows and len(vectors) > max_rows:
+                vectors = vectors[:max_rows]
+                ids = ids[:max_rows]
+                self.logger.info(f"Limiting export to {max_rows} rows")
+
+            data = {
+                "collection": collection_name,
+                "partition": partition_tag or "_default",
+                "dimension": int(vectors.shape[1]),
+                "count": len(vectors),
+                "data": [
+                    {
+                        "id": int(id),
+                        "vector": vec.tolist()
+                    }
+                    for id, vec in zip(ids, vectors)
+                ]
+            }
+
+            with open(json_filename, 'w') as f:
+                json.dump(data, f, indent=2)
+            
+            self.logger.debug(
+                "Successfully saved JSON data of collection: {}/partition: {} in {}!".format(
+                    collection_name, partition_tag, json_filename
+                )
+            )
+            return json_filename
+        except Exception as e:
+            self.logger.error("Error saving JSON: {}".format(e))
+            sys.exit(1)
+
+    def save_csv_data_batched(self, collection_name, partition_tag, batch_vectors, batch_ids, is_first_batch=False, max_rows=None, total_written=0):
+        """
+        Save data to CSV format incrementally (append mode).
+        This method writes batches incrementally to avoid loading all data into memory.
+        
+        Args:
+            collection_name: Name of the collection
+            partition_tag: Partition tag
+            batch_vectors: Numpy array of vectors for this batch
+            batch_ids: Numpy array of IDs for this batch
+            is_first_batch: True if this is the first batch (write header)
+            max_rows: Maximum total rows to write (None for all)
+            total_written: Number of rows already written
+            
+        Returns:
+            Total number of rows written after this batch
+        """
+        csv_filename = os.path.join(self.dirs, collection_name, f"{partition_tag or 'default'}.csv")
+        csv_foldername = os.path.dirname(csv_filename)
+        if not os.path.exists(csv_foldername):
+            os.makedirs(csv_foldername)
+
+        try:
+            mode = 'w' if is_first_batch else 'a'
+            with open(csv_filename, mode, newline='') as f:
+                writer = csv.writer(f)
+                
+                # Write header only on first batch
+                if is_first_batch:
+                    header = ['id'] + [f'dim_{i}' for i in range(batch_vectors.shape[1])]
+                    writer.writerow(header)
+                
+                # Check max_rows limit
+                if max_rows:
+                    remaining = max_rows - total_written
+                    if remaining <= 0:
+                        return total_written  # Already reached limit
+                    if len(batch_vectors) > remaining:
+                        batch_vectors = batch_vectors[:remaining]
+                        batch_ids = batch_ids[:remaining]
+                
+                # Write batch rows
+                for id, vec in zip(batch_ids, batch_vectors):
+                    row = [int(id)] + vec.tolist()
+                    writer.writerow(row)
+            
+            return total_written + len(batch_vectors)
+        except Exception as e:
+            self.logger.error("Error saving CSV batch: {}".format(e))
+            raise
+
+    def save_json_data_batched(self, collection_name, partition_tag, batch_vectors, batch_ids, is_first_batch=False, max_rows=None, total_written=0):
+        """
+        Save data to JSONL format incrementally (one JSON object per line).
+        JSONL is more memory-efficient than standard JSON for large datasets.
+        
+        Args:
+            collection_name: Name of the collection
+            partition_tag: Partition tag
+            batch_vectors: Numpy array of vectors for this batch
+            batch_ids: Numpy array of IDs for this batch
+            is_first_batch: True if this is the first batch (write metadata)
+            max_rows: Maximum total rows to write (None for all)
+            total_written: Number of rows already written
+            
+        Returns:
+            Total number of rows written after this batch
+        """
+        jsonl_filename = os.path.join(self.dirs, collection_name, f"{partition_tag or 'default'}.jsonl")
+        json_foldername = os.path.dirname(jsonl_filename)
+        if not os.path.exists(json_foldername):
+            os.makedirs(json_foldername)
+
+        try:
+            mode = 'w' if is_first_batch else 'a'
+            
+            # Write metadata file only on first batch
+            if is_first_batch:
+                metadata_filename = os.path.join(self.dirs, collection_name, f"{partition_tag or 'default'}_metadata.json")
+                metadata = {
+                    "collection": collection_name,
+                    "partition": partition_tag or "_default",
+                    "dimension": int(batch_vectors.shape[1]),
+                    "format": "jsonl"
+                }
+                with open(metadata_filename, 'w') as f:
+                    json.dump(metadata, f, indent=2)
+            
+            with open(jsonl_filename, mode) as f:
+                # Check max_rows limit
+                if max_rows:
+                    remaining = max_rows - total_written
+                    if remaining <= 0:
+                        return total_written
+                    if len(batch_vectors) > remaining:
+                        batch_vectors = batch_vectors[:remaining]
+                        batch_ids = batch_ids[:remaining]
+                
+                # Write each row as a JSON object on a single line
+                for id, vec in zip(batch_ids, batch_vectors):
+                    row_data = {
+                        "id": int(id),
+                        "vector": vec.tolist()
+                    }
+                    f.write(json.dumps(row_data) + '\n')
+            
+            return total_written + len(batch_vectors)
+        except Exception as e:
+            self.logger.error("Error saving JSONL batch: {}".format(e))
+            raise

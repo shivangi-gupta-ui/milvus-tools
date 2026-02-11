@@ -1,14 +1,19 @@
 M2H:
   milvus_version: 1.x
-  source_milvus_path: '/home/user/milvus'
+  source_milvus_path: '/home/shivangi/milvus'  # Path to Milvus data (gcsfuse mount point)
   mysql_parameter:
-    host: '127.0.0.1'
-    user: 'root'
+    host: 'milvus-db.moj.internal'
+    user: 'milvus'
     port: 3306
-    password: '123456'
-    database: 'milvus'
-  source_collection: # specify the 'partition_1' and 'partition_2' partitions of the 'test' collection.
-    test:
-      - 'partition_1'
-      - 'partition_2'
-  data_dir: '/home/user/data'
+    password: 'papDvj7oqE3E1Nz2'
+    database: 'mishards_cluster'
+  source_collection:
+    clips_v3:  # Collection name
+      # Leave empty to export all partitions
+      # Or specify partitions:
+      # - 'partition_1'
+      # - 'partition_2'
+  data_dir: '/home/shivangi/local/output'  # Where to save exported files
+  export_format: 'csv'  # Options: hdf5, csv, json
+  max_rows: 100  # null or omit to export all rows, or specify a number (e.g., 100) to limit
+  batch_size: 100  # Number of rows to process in each batch (for CSV/JSON). Set to null to disable batching. Recommended: 5000-50000 based on memory

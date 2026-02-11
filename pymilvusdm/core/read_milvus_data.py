@@ -101,3 +101,81 @@ class ReadMilvusDB:
             total_vectors, total_ids, total_rows = self.get_files_data(collection_name, collection_path, milvus_meta)
 
         return total_vectors, total_ids, total_rows
+
+    def read_milvus_file_batched(self, milvus_meta, collection_name, partition_tag, batch_size=10000):
+        """
+        Generator that yields data in batches instead of loading everything into memory.
+        This is memory-efficient for large datasets.
+        
+        Args:
+            milvus_meta: ReadMilvusMeta instance
+            collection_name: Name of the collection
+            partition_tag: Partition tag (None for default partition)
+            batch_size: Number of rows per batch
+            
+        Yields:
+            (batch_vectors, batch_ids, batch_count): Tuple of numpy arrays and count
+        """
+        self.logger.debug("Reading milvus/db data from collection: {}/partition: {} in batches of {}".format(
+            collection_name, partition_tag, batch_size))
+        
+        # Determine table_id and collection_path
+        if partition_tag:
+            partition_name = milvus_meta.get_partition_name(collection_name, partition_tag)
+            table_id = partition_name
+            collection_path = os.path.join(self.milvus_dir, "db", "tables", partition_name)
+        else:
+            table_id = collection_name
+            collection_path = os.path.join(self.milvus_dir, "db", "tables", collection_name)
+        
+        # Get collection metadata
+        dim, types = milvus_meta.get_collection_dim_type(table_id)
+        segment_list, row_list = milvus_meta.get_collection_segments_rows(table_id)
+        
+        if not segment_list:
+            return
+        
+        # Buffer to accumulate batches
+        batch_vectors = None
+        batch_ids = None
+        batch_count = 0
+        
+        for segment_id, rows in zip(segment_list, row_list):
+            # Read segment data
+            vectors, ids = self.get_segment_data(collection_path, segment_id, dim, rows, types)
+            
+            # Process this segment in chunks if it's larger than batch_size
+            segment_start = 0
+            while segment_start < len(vectors):
+                # Calculate how many rows we can add to current batch
+                remaining_in_batch = batch_size - batch_count
+                segment_end = min(segment_start + remaining_in_batch, len(vectors))
+                
+                chunk_vectors = vectors[segment_start:segment_end]
+                chunk_ids = ids[segment_start:segment_end]
+                
+                # Add to batch buffer
+                if batch_vectors is None:
+                    batch_vectors = chunk_vectors
+                    batch_ids = chunk_ids
+                else:
+                    batch_vectors = np.append(batch_vectors, chunk_vectors, axis=0)
+                    batch_ids = np.append(batch_ids, chunk_ids)
+                
+                batch_count += len(chunk_vectors)
+                segment_start = segment_end
+                
+                # Yield batch when it reaches batch_size
+                if batch_count >= batch_size:
+                    yield batch_vectors, batch_ids, batch_count
+                    batch_vectors = None
+                    batch_ids = None
+                    batch_count = 0
+            
+            # Clean up segment data from memory
+            del vectors
+            del ids
+        
+        # Yield remaining data in buffer
+        if batch_count > 0 and batch_vectors is not None:
+            yield batch_vectors, batch_ids, batch_count
