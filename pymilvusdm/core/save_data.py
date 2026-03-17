@@ -7,6 +7,15 @@ import h5py
 import numpy as np
 import yaml
 
+# ScyllaDB imports (optional - only needed if scylla_config is provided)
+try:
+    from cassandra.cluster import Cluster
+    from cassandra.auth import PlainTextAuthProvider
+    from cassandra.concurrent import execute_concurrent_with_args
+    SCYLLA_AVAILABLE = True
+except ImportError:
+    SCYLLA_AVAILABLE = False
+
 
 class SaveData:
     def __init__(self, logger, data_dir, timestamp):
@@ -266,4 +275,119 @@ class SaveData:
             return total_written + len(batch_vectors)
         except Exception as e:
             self.logger.error("Error saving JSONL batch: {}".format(e))
+            raise
+
+    def save_scylla_data_batched(self, collection_name, partition_tag, batch_vectors, batch_ids, 
+                                 session, prepared_stmt, concurrency=200, raise_on_error=False):
+        """
+        Save data to ScyllaDB Vector Search incrementally using async writes.
+        
+        Args:
+            collection_name: Name of the collection (for logging)
+            partition_tag: Partition tag (for logging)
+            batch_vectors: Numpy array of vectors for this batch
+            batch_ids: Numpy array of IDs for this batch
+            session: Cassandra/Scylla session object
+            prepared_stmt: Prepared INSERT statement
+            concurrency: Number of concurrent writes (default 200)
+            raise_on_error: Whether to raise on first error (default False)
+            
+        Returns:
+            (total_written, failures): Tuple of count and list of failures
+        """
+        if not SCYLLA_AVAILABLE:
+            raise ImportError("cassandra-driver is not installed. Install it with: pip install cassandra-driver")
+        
+        try:
+            # Convert numpy arrays to list of tuples (id, vector_list)
+            # IDs need to be converted to string, vectors to list of floats
+            rows = []
+            for id_val, vec in zip(batch_ids, batch_vectors):
+                # Convert ID to string (adjust if your IDs are already strings)
+                id_str = str(int(id_val))
+                # Convert vector to list of floats
+                vector_list = vec.tolist()
+                rows.append((id_str, vector_list))
+            
+            if not rows:
+                return 0, []
+            
+            # Execute concurrent async writes
+            results = execute_concurrent_with_args(
+                session, 
+                prepared_stmt, 
+                rows, 
+                concurrency=concurrency, 
+                raise_on_first_error=raise_on_error
+            )
+            
+            # Count failures and skipped rows (for INSERT IF NOT EXISTS)
+            # results is a list of (success: bool, result_or_exception) tuples
+            failures = []
+            skipped = 0
+            total_written = 0
+            
+            for i, (ok, res) in enumerate(results):
+                if not ok:
+                    # Actual error/failure
+                    failures.append((i, batch_ids[i], res))
+                else:
+                    # Check if using INSERT IF NOT EXISTS and row already existed
+                    # INSERT IF NOT EXISTS returns a ResultSet with [applied] column
+                    # applied=True means row was inserted, applied=False means row already existed
+                    try:
+                        # For regular INSERT, ResultSet might be empty or None
+                        # For INSERT IF NOT EXISTS, ResultSet contains [applied] column
+                        if hasattr(res, 'one'):
+                            try:
+                                row = res.one()
+                                if row is not None and hasattr(row, 'applied'):
+                                    # INSERT IF NOT EXISTS was used
+                                    if row.applied:
+                                        total_written += 1
+                                    else:
+                                        skipped += 1
+                                else:
+                                    # Regular INSERT (not IF NOT EXISTS) - ResultSet is empty but operation succeeded
+                                    total_written += 1
+                            except Exception as e:
+                                # res.one() might raise if ResultSet is empty (normal for regular INSERT)
+                                # This is expected for regular INSERT statements
+                                total_written += 1
+                        else:
+                            # Regular INSERT (not IF NOT EXISTS) - always succeeds if no exception
+                            total_written += 1
+                    except Exception as e:
+                        # If we can't parse the result, log it but assume it succeeded (regular INSERT)
+                        self.logger.debug(f"Could not parse result for row {i}: {e}, assuming success")
+                        total_written += 1
+            
+            # Log detailed results
+            if failures:
+                self.logger.warning(
+                    f"ScyllaDB write results for {collection_name}/{partition_tag}: "
+                    f"{total_written} written, {skipped} skipped, {len(failures)} failed out of {len(rows)} total"
+                )
+                failed_ids = [str(int(failed_id)) for _, failed_id, _ in failures]
+                self.logger.warning(
+                    f"Failed IDs for {collection_name}/{partition_tag}: {','.join(failed_ids)}"
+                )
+                for idx, failed_id, res in failures[:5]:
+                    self.logger.warning(f"Failure at index {idx} for id {int(failed_id)}: {res}")
+            else:
+                if skipped > 0:
+                    self.logger.info(
+                        f"ScyllaDB: Inserted {total_written} new rows, skipped {skipped} existing rows "
+                        f"for {collection_name}/{partition_tag} (total attempted: {len(rows)})"
+                    )
+                else:
+                    self.logger.info(
+                        f"Successfully wrote {total_written} rows to ScyllaDB for "
+                        f"{collection_name}/{partition_tag} (total attempted: {len(rows)})"
+                    )
+            
+            return total_written, failures
+            
+        except Exception as e:
+            self.logger.error(f"Error saving batch to ScyllaDB: {e}")
             raise

@@ -15,7 +15,6 @@ setup(
     long_description_content_type='text/markdown',
     install_requires=[
         'PyYAML',
-        'uuid',
         'h5py',
         'pymysql',
         'tqdm',

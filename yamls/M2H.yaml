@@ -1,19 +1,34 @@
 M2H:
   milvus_version: 1.x
-  source_milvus_path: '/home/shivangi/milvus'  # Path to Milvus data (gcsfuse mount point)
+  source_milvus_path: '/home/shivangi_sharechat_co/milvus'  # Path to Milvus data (gcsfuse mount point)
   mysql_parameter:
-    host: 'milvus-db.moj.internal'
+    host: '34.87.124.149'
     user: 'milvus'
     port: 3306
     password: 'papDvj7oqE3E1Nz2'
     database: 'mishards_cluster'
   source_collection:
     clips_v3:  # Collection name
-      # Leave empty to export all partitions
-      # Or specify partitions:
-      # - 'partition_1'
-      # - 'partition_2'
-  data_dir: '/home/shivangi/local/output'  # Where to save exported files
-  export_format: 'csv'  # Options: hdf5, csv, json
-  max_rows: 100  # null or omit to export all rows, or specify a number (e.g., 100) to limit
-  batch_size: 100  # Number of rows to process in each batch (for CSV/JSON). Set to null to disable batching. Recommended: 5000-50000 based on memory
+      - 'vectors_without_isrc'  # Only process this partition
+  data_dir: '/home/shivangi/local/output'  # Where to save exported files (still used for logs/checkpoints)
+  export_format: 'scylla'  # Options: hdf5, csv, json, scylla
+  max_rows: null  # null to export all rows, or specify a number (e.g., 100) to limit
+  batch_size: 10000  # Increased for faster processing. 10K rows per batch.
+  scylla_config:
+    contact_points:  # List of ScyllaDB hostnames/IPs
+      - 'node-0.gce-asia-south-1.3d0ff82965759eaef121.clusters.scylla.cloud'
+      - 'node-1.gce-asia-south-1.3d0ff82965759eaef121.clusters.scylla.cloud'
+      - 'node-2.gce-asia-south-1.3d0ff82965759eaef121.clusters.scylla.cloud'
+    port: 9042  # CQL port (default 9042)
+    username: 'scylla'  # ScyllaDB username
+    password: '9rPHKVk5A3JjZqW'  # ScyllaDB password
+    keyspace: 'moj_audio_service'  # Keyspace name
+    table_with_isrc: 'audio_vectors_with_isrc'  # Table name for vectors_with_isrc partition
+    table_without_isrc: 'audio_vectors_without_isrc_v1'  # NEW table for backfill
+    id_column: 'id'  # Column name for IDs (default: 'id')
+    embedding_column: 'embedding'  # Column name for vectors (default: 'embedding')
+    local_dc: 'GCE_ASIA_SOUTH_1'  # Local datacenter name (required when using explicit contact points)
+    use_ssl: false  # Set to true if SSL/TLS required
+    concurrency: 200  # Increased for faster writes
+    raise_on_error: false  # Whether to stop on first error (default: false)
+    skip_existing: false  # Plain INSERT (faster) - ScyllaDB primary key handles duplicates automatically

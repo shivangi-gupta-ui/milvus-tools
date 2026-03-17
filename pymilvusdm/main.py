@@ -107,8 +107,11 @@ def mil2hdf(config, logger):
         timestamp = str(uuid.uuid1())
         data_save = SaveData(logger, config['data_dir'], timestamp)
 
+        # Get ScyllaDB config if provided
+        scylla_config = config.get('scylla_config', None)
+        
         m2f = MilvusToHDF5(logger, milvusdb, milvus_meta, data_save, config['source_milvus_path'], config['data_dir'],
-                           config['mysql_parameter'])
+                           config['mysql_parameter'], scylla_config=scylla_config)
         try:
             collection_name = list(config['source_collection'].keys())[0]         
         except Exception as e:
